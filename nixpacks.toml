@@ -1,8 +1,13 @@
 [phases.setup]
-nixPkgs = ['python312', 'python312Packages.pip', 'chromium', 'xvfb-run']
+nixPkgs = ['python312', 'chromium', 'xvfb-run']
 
 [phases.install]
-cmds = ['python -m pip install -r requirements.txt']
+cmds = [
+  'pip install --upgrade pip',
+  'pip install selenium>=4.30.0',
+  'pip install undetected-chromedriver>=3.5.0', 
+  'pip install requests>=2.30.0'
+]
 
 [phases.build] 
 cmds = ['echo "Build phase complete"']
