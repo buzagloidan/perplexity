@@ -1,10 +1,7 @@
 {
   "$schema": "https://railway.app/railway.schema.json",
-  "build": {
-    "builder": "NIXPACKS"
-  },
   "deploy": {
-    "startCommand": "python perplexity_railway.py",
+    "startCommand": "python perplexity_simple.py",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
   }
