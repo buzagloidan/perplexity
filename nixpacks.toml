@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ['python312', 'chromium', 'xvfb-run']
+nixPkgs = ['python312', 'chromium-unwrapped', 'chromedriver', 'xvfb-run']
 
 [phases.install]
 cmds = [
@@ -13,4 +13,4 @@ cmds = [
 cmds = ['echo "Build phase complete"']
 
 [start]
-cmd = 'xvfb-run -a python perplexity_railway.py'
+cmd = 'export CHROME_BIN=$(which chromium) && xvfb-run -a python perplexity_railway.py'
