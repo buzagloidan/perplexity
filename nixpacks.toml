@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ['python312', 'python312Packages.pip', 'chromium', 'chromedriver']
+nixPkgs = ['python312', 'python312Packages.pip']
 
 [phases.install]
 cmds = ['python -m pip install -r requirements.txt']
@@ -8,4 +8,4 @@ cmds = ['python -m pip install -r requirements.txt']
 cmds = ['echo "Build phase complete"']
 
 [start]
-cmd = 'python perplexity_railway.py'
+cmd = 'python perplexity_simple.py'
