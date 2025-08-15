@@ -168,9 +168,10 @@ def check_code(code):
         
         # Try to find chromium binary in common locations
         chromium_paths = [
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/google-chrome",
             "/usr/bin/chromium",
             "/usr/bin/chromium-browser", 
-            "/usr/bin/google-chrome",
             "/opt/google/chrome/chrome"
         ]
         
