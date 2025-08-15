@@ -151,11 +151,13 @@ def check_code(code):
         # Set up undetected Chrome with incognito mode and proxy
         options = uc.ChromeOptions()
         options.add_argument("--incognito")
-        # Remove headless for now to avoid conflicts
-        # options.add_argument("--headless")
+        options.add_argument("--headless")  # Enable headless for Railway
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-plugins")
+        options.add_argument("--disable-images")
         
         # Add proxy with authentication using Chrome extension method
         proxy_extension = create_proxy_extension(PROXY_HOST, PROXY_PORT, PROXY_USERNAME, PROXY_PASSWORD)
