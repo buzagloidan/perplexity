@@ -159,6 +159,28 @@ def check_code(code):
         options.add_argument("--disable-plugins")
         options.add_argument("--disable-images")
         
+        # Set Chrome binary location for nixpacks environment
+        import os
+        import glob
+        
+        # Try to find chromium binary in common locations
+        chromium_paths = [
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser", 
+            "/usr/bin/google-chrome",
+            "/opt/google/chrome/chrome"
+        ]
+        
+        # Check nixpacks chromium location
+        nix_chromium = glob.glob("/nix/store/*/bin/chromium")
+        if nix_chromium:
+            chromium_paths.insert(0, nix_chromium[0])
+            
+        for path in chromium_paths:
+            if os.path.exists(path):
+                options.binary_location = path
+                break
+        
         # Add proxy with authentication using Chrome extension method
         proxy_extension = create_proxy_extension(PROXY_HOST, PROXY_PORT, PROXY_USERNAME, PROXY_PASSWORD)
         options.add_extension(proxy_extension)
