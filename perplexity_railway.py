@@ -162,6 +162,9 @@ def check_code(code):
         # Set Chrome binary location for nixpacks environment
         import os
         import glob
+        import subprocess
+        
+        print("DEBUG: Looking for Chrome binary...", flush=True)
         
         # Try to find chromium binary in common locations
         chromium_paths = [
@@ -174,12 +177,37 @@ def check_code(code):
         # Check nixpacks chromium location
         nix_chromium = glob.glob("/nix/store/*/bin/chromium")
         if nix_chromium:
+            print(f"DEBUG: Found nixpacks chromium: {nix_chromium}", flush=True)
             chromium_paths.insert(0, nix_chromium[0])
+        
+        # Try which command
+        try:
+            which_chromium = subprocess.check_output(["which", "chromium"], stderr=subprocess.DEVNULL).decode().strip()
+            if which_chromium:
+                chromium_paths.insert(0, which_chromium)
+                print(f"DEBUG: Found chromium via which: {which_chromium}", flush=True)
+        except:
+            pass
             
+        # Check all paths
+        chrome_binary = None
         for path in chromium_paths:
+            print(f"DEBUG: Checking path: {path}", flush=True)
             if os.path.exists(path):
-                options.binary_location = path
+                chrome_binary = path
+                print(f"DEBUG: Found Chrome at: {path}", flush=True)
                 break
+                
+        if chrome_binary:
+            options.binary_location = chrome_binary
+        else:
+            print("DEBUG: No Chrome binary found!", flush=True)
+            # List available binaries for debugging
+            try:
+                result = subprocess.check_output(["find", "/", "-name", "*chrom*", "-type", "f", "2>/dev/null"], shell=True).decode()
+                print(f"DEBUG: Available Chrome-like binaries: {result}", flush=True)
+            except:
+                pass
         
         # Add proxy with authentication using Chrome extension method
         proxy_extension = create_proxy_extension(PROXY_HOST, PROXY_PORT, PROXY_USERNAME, PROXY_PASSWORD)
