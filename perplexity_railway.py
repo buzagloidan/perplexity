@@ -13,8 +13,9 @@ import tempfile
 import requests
 
 # Configuration
-NUM_CODES_TO_TEST = 10  # Number of random codes to test
-MAX_WORKERS = 1  # Number of parallel browsers (reduced to avoid file conflicts)
+NUM_CODES_TO_TEST = 1000  # Number of random codes to test
+MAX_WORKERS = 1  # Single worker at a time
+CODES_PER_WORKER = 10  # Number of codes each worker tries before IP change
 
 # Proxy Configuration (Rotating residential proxy)
 PROXY_HOST = "p.webshare.io"
@@ -30,16 +31,17 @@ TELEGRAM_CHAT_ID = None  # Will be set to the first person who messages the bot
 # URL to visit
 url = "https://www.perplexity.ai/join/p/priority?code"
 
-def create_proxy_extension(host, port, username, password):
-    """Create a Chrome extension for proxy authentication"""
+def create_proxy_extension(host, port, username, password, worker_id=0, batch_id=0):
+    """Create a Chrome extension for proxy authentication with unique worker and batch ID"""
     import zipfile
     import tempfile
+    import threading
     
-    manifest_json = """
-    {
-        "version": "1.0.0",
+    manifest_json = f"""
+    {{
+        "version": "1.0.{batch_id}",
         "manifest_version": 2,
-        "name": "Chrome Proxy",
+        "name": "Chrome Proxy Batch {batch_id}",
         "permissions": [
             "proxy",
             "tabs",
@@ -49,11 +51,11 @@ def create_proxy_extension(host, port, username, password):
             "webRequest",
             "webRequestBlocking"
         ],
-        "background": {
+        "background": {{
             "scripts": ["background.js"]
-        },
+        }},
         "minimum_chrome_version":"22.0.0"
-    }
+    }}
     """
     
     background_js = f"""
@@ -87,8 +89,9 @@ def create_proxy_extension(host, port, username, password):
     );
     """
     
-    # Create temporary directory and files
-    temp_dir = tempfile.mkdtemp()
+    # Create unique temporary directory for each batch
+    thread_id = threading.get_ident()
+    temp_dir = tempfile.mkdtemp(prefix=f"proxy_ext_batch_{batch_id}_{thread_id}_")
     manifest_path = os.path.join(temp_dir, "manifest.json")
     background_path = os.path.join(temp_dir, "background.js")
     
@@ -97,8 +100,8 @@ def create_proxy_extension(host, port, username, password):
     with open(background_path, "w") as f:
         f.write(background_js)
     
-    # Create zip file
-    extension_path = os.path.join(temp_dir, "proxy_auth_extension.zip")
+    # Create zip file with unique name
+    extension_path = os.path.join(temp_dir, f"proxy_auth_extension_batch_{batch_id}_{thread_id}.zip")
     with zipfile.ZipFile(extension_path, 'w') as zip_file:
         zip_file.write(manifest_path, "manifest.json")
         zip_file.write(background_path, "background.js")
@@ -145,158 +148,178 @@ def generate_random_code():
     random_part = ''.join(random.choices(characters, k=9))
     return f"MEO{random_part}"
 
-# Function to check if a code works
-def check_code(code):
+# Function to check multiple codes in the same browser session
+def check_code_batch(codes, batch_id=0):
+    import threading
+    worker_id = threading.get_ident() % 1000  # Get unique worker ID
+    results = []  # Store results for all codes in this batch
+    driver = None
+    
     try:
         # Set up undetected Chrome with incognito mode and proxy
         options = uc.ChromeOptions()
         options.add_argument("--incognito")
-        options.add_argument("--headless")  # Enable headless for Railway
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-extensions")
-        options.add_argument("--disable-plugins")
-        options.add_argument("--disable-images")
+        # Removed headless for local debugging
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--disable-extensions-except")
+        options.add_argument("--disable-plugins-discovery")
+        options.add_argument(f"--user-data-dir={tempfile.mkdtemp(prefix=f'chrome_worker_{worker_id}_')}")
         
-        # Additional Docker-specific arguments to prevent crashes
-        options.add_argument("--disable-background-timer-throttling")
-        options.add_argument("--disable-backgrounding-occluded-windows")
-        options.add_argument("--disable-renderer-backgrounding")
-        options.add_argument("--disable-features=TranslateUI")
-        options.add_argument("--disable-ipc-flooding-protection")
-        options.add_argument("--disable-web-security")
-        options.add_argument("--disable-features=VizDisplayCompositor")
-        options.add_argument("--disable-software-rasterizer")
-        options.add_argument("--disable-background-networking")
-        options.add_argument("--disable-default-apps")
-        options.add_argument("--disable-sync")
-        options.add_argument("--metrics-recording-only")
-        options.add_argument("--mute-audio")
-        options.add_argument("--no-first-run")
-        options.add_argument("--safebrowsing-disable-auto-update")
-        options.add_argument("--disable-component-update")
-        options.add_argument("--disable-domain-reliability")
-        options.add_argument("--single-process")  # Run in single process mode
-        
-        # Set Chrome binary location for nixpacks environment
+        # Set Chrome binary location for Windows/Linux/macOS
         import os
         import glob
         import subprocess
+        import platform
         
-        print("DEBUG: Looking for Chrome binary...", flush=True)
-        
-        # Try to find chromium binary in common locations
-        chromium_paths = [
-            "/usr/bin/google-chrome-stable",
-            "/usr/bin/google-chrome",
-            "/usr/bin/chromium",
-            "/usr/bin/chromium-browser", 
-            "/opt/google/chrome/chrome"
-        ]
-        
-        # Check nixpacks chromium location
-        nix_chromium = glob.glob("/nix/store/*/bin/chromium")
-        if nix_chromium:
-            print(f"DEBUG: Found nixpacks chromium: {nix_chromium}", flush=True)
-            chromium_paths.insert(0, nix_chromium[0])
-        
-        # Try which command
-        try:
-            which_chromium = subprocess.check_output(["which", "chromium"], stderr=subprocess.DEVNULL).decode().strip()
-            if which_chromium:
-                chromium_paths.insert(0, which_chromium)
-                print(f"DEBUG: Found chromium via which: {which_chromium}", flush=True)
-        except:
-            pass
-            
-        # Check all paths
+        # Detect operating system and set appropriate paths
+        system = platform.system().lower()
         chrome_binary = None
-        for path in chromium_paths:
-            print(f"DEBUG: Checking path: {path}", flush=True)
-            if os.path.exists(path):
-                chrome_binary = path
-                print(f"DEBUG: Found Chrome at: {path}", flush=True)
-                break
+        
+        if system == "windows":
+            # Windows Chrome paths
+            windows_chrome_paths = [
+                os.path.expandvars(r"%PROGRAMFILES%\Google\Chrome\Application\chrome.exe"),
+                os.path.expandvars(r"%PROGRAMFILES(X86)%\Google\Chrome\Application\chrome.exe"),
+                os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+            ]
+            
+            for path in windows_chrome_paths:
+                if os.path.exists(path):
+                    chrome_binary = path
+                    break
+        else:
+            # Linux/Unix Chrome paths
+            chromium_paths = [
+                "/usr/bin/google-chrome-stable",
+                "/usr/bin/google-chrome",
+                "/usr/bin/chromium",
+                "/usr/bin/chromium-browser", 
+                "/opt/google/chrome/chrome"
+            ]
+            
+            # Check nixpacks chromium location
+            nix_chromium = glob.glob("/nix/store/*/bin/chromium")
+            if nix_chromium:
+                chromium_paths.insert(0, nix_chromium[0])
+            
+            # Try which command
+            try:
+                which_chromium = subprocess.check_output(["which", "chromium"], stderr=subprocess.DEVNULL).decode().strip()
+                if which_chromium:
+                    chromium_paths.insert(0, which_chromium)
+            except:
+                pass
+                
+            # Check all paths
+            for path in chromium_paths:
+                if os.path.exists(path):
+                    chrome_binary = path
+                    break
                 
         if chrome_binary:
             options.binary_location = chrome_binary
         else:
-            print("DEBUG: No Chrome binary found!", flush=True)
-            # List available binaries for debugging
-            try:
-                result = subprocess.check_output(["find", "/", "-name", "*chrom*", "-type", "f", "2>/dev/null"], shell=True).decode()
-                print(f"DEBUG: Available Chrome-like binaries: {result}", flush=True)
-            except:
-                pass
+            print("ERROR: Chrome not found! Please install Google Chrome.", flush=True)
+            return [(code, "Chrome not found") for code in codes]
         
         # Add proxy with authentication using Chrome extension method
-        proxy_extension = create_proxy_extension(PROXY_HOST, PROXY_PORT, PROXY_USERNAME, PROXY_PASSWORD)
+        proxy_extension = create_proxy_extension(PROXY_HOST, PROXY_PORT, PROXY_USERNAME, PROXY_PASSWORD, worker_id, batch_id)
         options.add_extension(proxy_extension)
         
+        print(f"Creating browser for batch {batch_id} with {len(codes)} codes", flush=True)
         driver = uc.Chrome(options=options, version_main=None)
     except Exception as e:
-        return code, f"Driver creation error: {str(e)}"
+        return [(code, f"Driver creation error: {str(e)}") for code in codes]
+    
     try:
-        driver.get(url)
-        
-        # Wait for the input field to be present
-        wait = WebDriverWait(driver, 10)
-        code_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input[placeholder="Promo Code"]')))
-        
-        # Enter the code
-        code_input.clear()
-        code_input.send_keys(code)
-        
-        # Find and click the submit button
-        submit_button = driver.find_element(By.CSS_SELECTOR, 'button[type="submit"]')
-        submit_button.click()
-        
-        # Wait for response message to appear
-        import time
-        time.sleep(2)  # Give page time to fully load
-        
-        try:
-            error_message_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.text-caution')))
-            error_message = error_message_element.text
-            print(f"DEBUG: Found error message: '{error_message}'", flush=True)
-            
-            if "already been redeemed" in error_message.lower():
-                return code, f"Already redeemed: {error_message}"
-            elif "not eligible in your region" in error_message.lower():
-                return code, f"Region restricted: {error_message}"
-            elif "invalid" in error_message.lower() or "not valid" in error_message.lower():
-                return code, f"Invalid code: {error_message}"
-            else:
-                return code, f"Error: {error_message}"
-        except TimeoutException:
-            print("DEBUG: No error message found, checking page content...", flush=True)
-            # If no error message, check for success
-            page_text = driver.page_source.lower()
-            print(f"DEBUG: Page contains 'success': {'success' in page_text}", flush=True)
-            print(f"DEBUG: Page contains 'welcome': {'welcome' in page_text}", flush=True)
-            if "success" in page_text or "welcome" in page_text or "applied" in page_text:
-                return code, "Success"
-            else:
-                return code, "Unknown response"
-    except (NoSuchElementException, TimeoutException) as e:
-        return code, f"Error: {str(e)}"
+        # Process each code in the same browser session
+        for i, code in enumerate(codes):
+            try:
+                print(f"Testing code {i+1}/{len(codes)}: {code}", flush=True)
+                
+                # Navigate to the page (or refresh if not first code)
+                if i == 0:
+                    print(f"Navigating to {url}...", flush=True)
+                    driver.get(url)
+                else:
+                    print(f"Refreshing page for next code...", flush=True)
+                    driver.refresh()
+                
+                # Wait for the input field to be present
+                print(f"Waiting for input field...", flush=True)
+                wait = WebDriverWait(driver, 15)
+                code_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input[placeholder="Promo Code"]')))
+                print(f"Found input field", flush=True)
+                
+                # Enter the code
+                code_input.clear()
+                code_input.send_keys(code)
+                
+                # Find and click the submit button
+                submit_button = driver.find_element(By.CSS_SELECTOR, 'button[type="submit"]')
+                submit_button.click()
+                
+                # Wait for response message to appear
+                import time
+                time.sleep(2)  # Give page time to fully load
+                
+                try:
+                    error_message_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.text-caution')))
+                    error_message = error_message_element.text
+                    print(f"DEBUG: Found error message: '{error_message}'", flush=True)
+                    
+                    if "already been redeemed" in error_message.lower():
+                        results.append((code, f"Already redeemed: {error_message}"))
+                    elif "not eligible in your region" in error_message.lower():
+                        results.append((code, f"Region restricted: {error_message}"))
+                    elif "invalid" in error_message.lower() or "not valid" in error_message.lower():
+                        results.append((code, f"Invalid code: {error_message}"))
+                    else:
+                        results.append((code, f"Error: {error_message}"))
+                except TimeoutException:
+                    print("DEBUG: No error message found, checking page content...", flush=True)
+                    # If no error message, check for success
+                    page_text = driver.page_source.lower()
+                    print(f"DEBUG: Page contains 'success': {'success' in page_text}", flush=True)
+                    print(f"DEBUG: Page contains 'welcome': {'welcome' in page_text}", flush=True)
+                    if "success" in page_text or "welcome" in page_text or "applied" in page_text:
+                        results.append((code, "Success"))
+                    else:
+                        results.append((code, "Unknown response"))
+                        
+            except (NoSuchElementException, TimeoutException) as e:
+                results.append((code, f"Error: {str(e)}"))
+            except Exception as e:
+                print(f"Browser error for {code}: {str(e)}", flush=True)
+                results.append((code, f"Browser error: {str(e)}"))
+                
+            # Small delay between codes
+            if i < len(codes) - 1:
+                time.sleep(1)
     finally:
         try:
-            driver.quit()
-        except:
-            pass  # Ignore quit errors
+            print(f"Closing browser for batch {batch_id}...", flush=True)
+            if driver:
+                driver.quit()
+        except Exception as e:
+            print(f"Error closing browser: {str(e)}", flush=True)
+    
+    return results
 
 def main():
     print(f"Starting random code generation and testing...")
     print(f"Will test MEO3KPQ7ZR5Q first, then {NUM_CODES_TO_TEST - 1} random codes")
     print(f"Using rotating residential proxy: {PROXY_HOST}:{PROXY_PORT}")
+    print(f"Testing {CODES_PER_WORKER} codes per worker before changing IP")
     print("=" * 50)
     
     # Send start message to Telegram
     start_msg = f"🚀 <b>Perplexity Code Test Started</b>\n\n"
     start_msg += f"📊 Testing MEO3KPQ7ZR5Q first, then {NUM_CODES_TO_TEST - 1} random codes\n"
     start_msg += f"🌍 Using rotating residential proxy: {PROXY_HOST}:{PROXY_PORT}\n"
+    start_msg += f"🔄 {CODES_PER_WORKER} codes per worker before IP change\n"
     start_msg += f"⏰ Started: {time.strftime('%Y-%m-%d %H:%M:%S')}"
     send_telegram_message(start_msg)
     
@@ -306,46 +329,64 @@ def main():
     
     # Test codes and send live results
     working_codes = []
+    completed = 0
     
-    # Use ThreadPoolExecutor for parallel execution
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = [executor.submit(check_code, code) for code in codes]
+    # Process codes in batches of CODES_PER_WORKER
+    for batch_start in range(0, len(codes), CODES_PER_WORKER):
+        batch_end = min(batch_start + CODES_PER_WORKER, len(codes))
+        batch_codes = codes[batch_start:batch_end]
+        batch_id = batch_start // CODES_PER_WORKER + 1
         
-        for i, future in enumerate(concurrent.futures.as_completed(futures), 1):
-            print(f"[{i}/{NUM_CODES_TO_TEST}] Processing result...", flush=True)
-            code, status = future.result()
+        print(f"\n🔄 Starting new worker batch {batch_id} ({batch_start + 1}-{batch_end} of {len(codes)})", flush=True)
+        print(f"📡 Using new IP rotation for batch {batch_id}", flush=True)
+        
+        # Process the batch of codes in the same browser session
+        try:
+            batch_results = check_code_batch(batch_codes, batch_id)
+        except Exception as e:
+            print(f"Error testing batch {batch_id}: {str(e)}", flush=True)
+            batch_results = [(code, f"Error: {str(e)}") for code in batch_codes]
+        
+        # Process results from the batch
+        for result_code, status in batch_results:
+            completed += 1
             
             # Format result for display and Telegram
             send_to_telegram = False
             
             if status == "Success":
-                display_msg = f"✅ Code {code}: SUCCESS!"
-                telegram_msg = f"🎉 <b>SUCCESS!</b>\n<code>{code}</code>\n✅ Working code found!"
-                working_codes.append(code)
+                display_msg = f"✅ Code {result_code}: SUCCESS!"
+                telegram_msg = f"🎉 <b>SUCCESS!</b>\n<code>{result_code}</code>\n✅ Working code found!"
+                working_codes.append(result_code)
                 send_to_telegram = True
             elif "Already redeemed" in str(status):
-                display_msg = f"❌ Code {code}: Already redeemed"
-                telegram_msg = f"❌ <code>{code}</code>\n🔄 Already redeemed"
+                display_msg = f"❌ Code {result_code}: Already redeemed"
+                telegram_msg = f"❌ <code>{result_code}</code>\n🔄 Already redeemed"
                 send_to_telegram = True
             elif "Region restricted" in str(status):
-                display_msg = f"🌍 Code {code}: Region restricted"
-                telegram_msg = f"🌍 <code>{code}</code>\n🚫 Region restricted"
+                display_msg = f"🌍 Code {result_code}: Region restricted"
+                telegram_msg = f"🌍 <code>{result_code}</code>\n🚫 Region restricted"
                 send_to_telegram = True
             elif "Invalid" in str(status):
-                display_msg = f"🚫 Code {code}: Invalid"
+                display_msg = f"🚫 Code {result_code}: Invalid"
                 # Don't send invalid codes to Telegram
                 send_to_telegram = False
             else:
-                display_msg = f"❓ Code {code}: {status}"
+                display_msg = f"❓ Code {result_code}: {status}"
                 # Don't send unknown status to Telegram
                 send_to_telegram = False
             
-            print(f"[{i}/{NUM_CODES_TO_TEST}] {display_msg}", flush=True)
+            print(f"[{completed}/{NUM_CODES_TO_TEST}] {display_msg}", flush=True)
             
             # Send individual result to Telegram only for specific statuses
             if send_to_telegram:
-                progress_msg = f"[{i}/{NUM_CODES_TO_TEST}] {telegram_msg}"
+                progress_msg = f"[{completed}/{NUM_CODES_TO_TEST}] {telegram_msg}"
                 send_telegram_message(progress_msg)
+        
+        # Add delay between batches to allow IP rotation
+        if batch_end < len(codes):
+            print(f"⏳ Waiting 5 seconds before next worker batch for IP rotation...", flush=True)
+            time.sleep(5)
     
     # Send final summary to Telegram
     summary_msg = f"📋 <b>Test Completed!</b>\n\n"
